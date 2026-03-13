@@ -37,6 +37,9 @@ if [ "$MODE" == "predcls" ]; then
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
         SOLVER.IMS_PER_BATCH 12 \
         TEST.IMS_PER_BATCH 2 \
+        SOLVER.BASE_LR 0.002 \
+        SOLVER.WARMUP_FACTOR 0.01 \
+        SOLVER.WARMUP_ITERS 1000 \
         SOLVER.MAX_ITER 50000 \
         SOLVER.VAL_PERIOD 2000 \
         SOLVER.CHECKPOINT_PERIOD 2000 \
@@ -54,6 +57,9 @@ elif [ "$MODE" == "sgcls" ]; then
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
         SOLVER.IMS_PER_BATCH 12 \
         TEST.IMS_PER_BATCH 2 \
+        SOLVER.BASE_LR 0.002 \
+        SOLVER.WARMUP_FACTOR 0.01 \
+        SOLVER.WARMUP_ITERS 1000 \
         SOLVER.MAX_ITER 50000 \
         SOLVER.VAL_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
@@ -70,6 +76,9 @@ elif [ "$MODE" == "sgdet" ]; then
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
         SOLVER.IMS_PER_BATCH 8 \
         TEST.IMS_PER_BATCH 2 \
+        SOLVER.BASE_LR 0.002 \
+        SOLVER.WARMUP_FACTOR 0.01 \
+        SOLVER.WARMUP_ITERS 1000 \
         SOLVER.MAX_ITER 50000 \
         SOLVER.VAL_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \

@@ -1184,7 +1184,7 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             num_obj_cls=self.num_obj_cls,
             num_rel_cls=self.num_rel_cls,
             context_hidden_dim=512,
-            temperature=0.1,
+            temperature=1.0,
             num_heads=4,
             clip_embed_path=clip_embed_path,
         )
@@ -1200,7 +1200,8 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             # Sum fg_matrix across both object dimensions to get per-predicate counts
             fg = statistics['fg_matrix']
             predicate_freq = fg.sum(0).sum(0).float().tolist()  # [num_rel_cls]
-            print(f"[CAPE-SGG] Predicate freq from fg_matrix: min={min(predicate_freq):.0f}, max={max(predicate_freq):.0f}, median={sorted(predicate_freq)[len(predicate_freq)//2]:.0f}")
+            predicate_freq[0] = 0.0  # CRITICAL: exclude background class from frequency weighting
+            print(f"[CAPE-SGG] Predicate freq from fg_matrix (bg excluded): min={min(predicate_freq[1:]):.0f}, max={max(predicate_freq[1:]):.0f}, median={sorted(predicate_freq[1:])[len(predicate_freq[1:])//2]:.0f}")
         
         if predicate_freq is None or sum(predicate_freq) == 0:
             # Fallback to REL_PROP from config (proportions, not raw counts, but still usable)

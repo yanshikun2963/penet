@@ -84,23 +84,35 @@ class CAPM(nn.Module):
         self._init_weights()
     
     def _init_weights(self):
-        for module in [self.W_sem, self.delta_proj]:
-            for m in module:
-                if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight, gain=0.1)
-                    if m.bias is not None:
-                        nn.init.zeros_(m.bias)
-                elif isinstance(m, nn.LayerNorm):
-                    nn.init.ones_(m.weight)
+        # W_sem (context encoder): conservative init — context should start small
+        for m in self.W_sem:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                if m.bias is not None:
                     nn.init.zeros_(m.bias)
-        nn.init.xavier_uniform_(self.pred_proj.weight, gain=0.1)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+        
+        # delta_proj: standard init — output is bounded by Tanh anyway
+        for m in self.delta_proj:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        
+        # pred_proj: moderate init for gate computation & class_basis seeding
+        nn.init.xavier_uniform_(self.pred_proj.weight, gain=0.5)
         nn.init.zeros_(self.pred_proj.bias)
-        nn.init.xavier_uniform_(self.context_to_basis.weight, gain=0.1)
+        
+        # context_to_basis: standard init so context_proj has meaningful magnitude
+        nn.init.xavier_uniform_(self.context_to_basis.weight, gain=1.0)
         nn.init.zeros_(self.context_to_basis.bias)
+        
         # Semantic init for class_basis from CLIP pred embeddings
         with torch.no_grad():
             clip_proj = F.linear(self.clip_pred_embeds, self.pred_proj.weight, self.pred_proj.bias)
-            self.class_basis.copy_(clip_proj * 0.1)
+            self.class_basis.copy_(clip_proj * 0.3)  # 0.3 gives CAPM meaningful initial modulation
         nn.init.ones_(self.gate_merge.weight)
     
     def forward(self, predicate_proto, pair_pred):
@@ -252,16 +264,20 @@ class LearnableGateCAPM(nn.Module):
         )
         self.mod_scale = nn.Parameter(torch.tensor(0.1))
         
-        for module in [self.W_sem, self.delta_proj]:
-            for m in module:
-                if isinstance(m, nn.Linear):
-                    nn.init.xavier_uniform_(m.weight, gain=0.1)
-                    if m.bias is not None:
-                        nn.init.zeros_(m.bias)
-                elif isinstance(m, nn.LayerNorm):
-                    nn.init.ones_(m.weight)
+        for m in self.W_sem:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                if m.bias is not None:
                     nn.init.zeros_(m.bias)
-        nn.init.xavier_uniform_(self.context_to_basis.weight, gain=0.1)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
+        for m in self.delta_proj:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight, gain=1.0)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        nn.init.xavier_uniform_(self.context_to_basis.weight, gain=1.0)
         nn.init.zeros_(self.context_to_basis.bias)
     
     def forward(self, predicate_proto, pair_pred):

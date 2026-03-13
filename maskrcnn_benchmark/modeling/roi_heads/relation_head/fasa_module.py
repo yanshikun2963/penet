@@ -68,12 +68,16 @@ class FASA(nn.Module):
                 nn.init.zeros_(m.bias)
     
     def _compute_freq_weights(self, predicate_freq):
-        """α_c = sigmoid(k · (log(N_median) - log(N_c)))"""
+        """α_c = sigmoid(k · (log(N_median) - log(N_c)))
+        Background class (index 0) is excluded from median computation and gets weight=0.
+        """
         freq = torch.FloatTensor(predicate_freq)
         freq = freq.clamp(min=1.0)
         log_freq = torch.log(freq)
-        log_median = torch.median(log_freq)
+        # Compute median over FOREGROUND classes only (exclude index 0)
+        log_median = torch.median(log_freq[1:])
         weights = torch.sigmoid(self.temperature_k * (log_median - log_freq))
+        weights[0] = 0.0  # background class should NOT be anchored
         self.register_buffer('freq_weights', weights)
     
     def set_predicate_freq(self, predicate_freq):
