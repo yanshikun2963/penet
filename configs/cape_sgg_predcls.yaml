@@ -99,7 +99,7 @@ SOLVER:
   WEIGHT_DECAY: 0.0001
   MOMENTUM: 0.9
   GRAD_NORM_CLIP: 5.0
-  STEPS: (20000, 35000)
+  STEPS: (20000, 35000)  # NOTE: ignored when using WarmupReduceLROnPlateau (only for WarmupMultiStepLR)
   MAX_ITER: 50000
   VAL_PERIOD: 2000
   CHECKPOINT_PERIOD: 2000

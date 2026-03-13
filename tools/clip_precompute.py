@@ -1,4 +1,3 @@
-import json
 #!/usr/bin/env python
 """
 CLIP/OpenCLIP Embedding Precomputation for CAPE-SGG
@@ -12,6 +11,7 @@ Usage:
 
 import os
 import sys
+import json
 import argparse
 import torch
 
@@ -65,7 +65,7 @@ def encode_with_open_clip(model_name='ViT-L-14', pretrained='datacomp_xl_s13b_b9
         import open_clip
     except ImportError:
         print("[ERROR] open_clip not installed. Install with: pip install open-clip-torch")
-        return None, None, None, None, None
+        return None, None, None, None
     
     print(f"Loading OpenCLIP model: {model_name} ({pretrained})...")
     model, _, _ = open_clip.create_model_and_transforms(model_name, pretrained=pretrained)
@@ -92,7 +92,7 @@ def encode_with_open_clip(model_name='ViT-L-14', pretrained='datacomp_xl_s13b_b9
     embed_dim = obj_embeds.shape[1]
     model_id = f"openclip-{model_name}-{pretrained}"
     
-    return obj_embeds.cpu(), pred_embeds.cpu(), embed_dim, model_id
+    return obj_embeds.cpu().float(), pred_embeds.cpu().float(), embed_dim, model_id
 
 
 def encode_with_clip(model_name='ViT-B/32', obj_classes=None, pred_classes=None):
@@ -105,7 +105,7 @@ def encode_with_clip(model_name='ViT-B/32', obj_classes=None, pred_classes=None)
         import clip
     except ImportError:
         print("[ERROR] clip not installed. Install with: pip install git+https://github.com/openai/CLIP.git")
-        return None, None, None, None, None
+        return None, None, None, None
     
     print(f"Loading CLIP model: {model_name}...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
