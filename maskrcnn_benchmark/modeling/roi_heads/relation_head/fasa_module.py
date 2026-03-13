@@ -97,6 +97,14 @@ class FASA(nn.Module):
         """
         anchors = self.compute_anchors().detach()  # stop gradient
         
+        # Rescale anchors to match prototype magnitude so L2 distance is meaningful.
+        # Without this, anchor_proj (frozen, gain=0.1 init) produces ~O(0.0001) values
+        # while prototypes are ~O(1), making L2 loss degenerate to weight decay.
+        with torch.no_grad():
+            proto_scale = predicate_proto.detach().norm(dim=-1).mean().clamp(min=1e-8)
+            anchor_scale = anchors.norm(dim=-1).mean().clamp(min=1e-8)
+        anchors = anchors * (proto_scale / anchor_scale)
+        
         loss = torch.tensor(0.0, device=predicate_proto.device)
         
         # Cosine distance component (scale-invariant)
@@ -106,10 +114,9 @@ class FASA(nn.Module):
             cos_dist = 1.0 - (proto_norm * anchor_norm).sum(dim=-1)  # [num_rel_cls]
             loss = loss + self.cos_weight * (self.freq_weights * cos_dist).mean()
         
-        # Normalized L2 component
+        # L2 component (now meaningful because anchors are rescaled)
         if self.l2_weight > 0:
             l2_dist = (predicate_proto - anchors).pow(2).sum(dim=-1)
-            # Normalize by proto_dim to keep loss scale manageable
             l2_dist = l2_dist / predicate_proto.shape[-1]
             loss = loss + self.l2_weight * (self.freq_weights * l2_dist).mean()
         

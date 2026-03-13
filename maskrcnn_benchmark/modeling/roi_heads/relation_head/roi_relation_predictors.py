@@ -1085,24 +1085,16 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             self.clip_blend_obj = nn.Parameter(torch.tensor(0.3))
             self.clip_blend_rel = nn.Parameter(torch.tensor(0.3))
             
-            # Initialize: blend GloVe + projected CLIP for better starting point
-            with torch.no_grad():
-                clip_obj_init = F.linear(clip_obj, self.clip_obj_proj.weight)
-                clip_rel_init = F.linear(clip_rel, self.clip_rel_proj.weight)
-                blended_obj = 0.7 * obj_embed_vecs + 0.3 * clip_obj_init
-                blended_rel = 0.7 * rel_embed_vecs + 0.3 * clip_rel_init
-            
             self.use_clip_bridge = True
             print(f"[CAPE-SGG] CLIP semantic bridge: {clip_dim}d → {self.embed_dim}d, blended with GloVe")
-        else:
-            blended_obj = obj_embed_vecs
-            blended_rel = rel_embed_vecs
         
+        # Initialize embeddings with PURE GloVe — CLIP contribution comes from dynamic blend in forward()
+        # (Previous version blended at init too, causing double-application: ~70% random CLIP + 30% GloVe)
         self.obj_embed = nn.Embedding(self.num_obj_cls, self.embed_dim)
         self.rel_embed = nn.Embedding(self.num_rel_cls, self.embed_dim)
         with torch.no_grad():
-            self.obj_embed.weight.copy_(blended_obj, non_blocking=True)
-            self.rel_embed.weight.copy_(blended_rel, non_blocking=True)
+            self.obj_embed.weight.copy_(obj_embed_vecs, non_blocking=True)
+            self.rel_embed.weight.copy_(rel_embed_vecs, non_blocking=True)
 
         # ============================================================
         # APT: Adaptive Prompt Tuning module
