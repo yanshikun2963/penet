@@ -77,6 +77,15 @@ MODEL:
       CONTEXT_LAYER: "motifs"
       SPATIAL_FOR_VISION: True
       EFFECT_ANALYSIS: True
+    CAPE:
+      USE_CAPM: True
+      USE_FASA: True
+      USE_CLIP_BRIDGE: True
+      USE_APT: True
+      CAPM_VARIANT: 'capm'
+      FASA_WEIGHT: 0.1
+      CAPM_NUM_HEADS: 4
+      CAPM_TEMPERATURE: 1.0
     TRANSFORMER:
       DROPOUT_RATE: 0.1
       OBJ_LAYER: 4

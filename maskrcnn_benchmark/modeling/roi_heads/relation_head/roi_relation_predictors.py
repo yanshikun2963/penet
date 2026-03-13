@@ -1059,8 +1059,8 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
         
         # ============================================================
         # CLIP Semantic Bridge: project CLIP → embed_dim and blend with GloVe
-        # This is how CLIP truly enhances semantic initialization (not just CAPM lookup)
         # ============================================================
+        cape_clip_cfg = config.MODEL.ROI_RELATION_HEAD.CAPE.USE_CLIP_BRIDGE
         clip_embed_path_init = None
         for candidate in ['./datasets/vg/clip_embeddings.pt', './clip_embeddings.pt',
                           '../datasets/vg/clip_embeddings.pt']:
@@ -1069,7 +1069,7 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
                 break
         
         self.use_clip_bridge = False
-        if clip_embed_path_init and os.path.exists(clip_embed_path_init):
+        if cape_clip_cfg and clip_embed_path_init and os.path.exists(clip_embed_path_init):
             clip_data = torch.load(clip_embed_path_init, map_location='cpu')
             clip_obj = clip_data['obj_embeddings']  # [151, clip_dim]
             clip_rel = clip_data['pred_embeddings']  # [51, clip_dim]
@@ -1097,24 +1097,26 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             self.rel_embed.weight.copy_(rel_embed_vecs, non_blocking=True)
 
         # ============================================================
-        # APT: Adaptive Prompt Tuning module
-        # Makes static GloVe embeddings dynamic based on visual context
+        # APT: Adaptive Prompt Tuning module (config-controlled)
         # ============================================================
-        try:
-            from maskrcnn_benchmark.modeling.adpative_modeling import CoreModule as APTModule
-            self.apt_obj = APTModule(
-                prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
-                hidden_dim=512, prompt_length=5
-            )
-            self.apt_rel = APTModule(
-                prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
-                hidden_dim=512, prompt_length=5
-            )
-            self.use_apt = True
-            print("[CAPE-SGG] APT module loaded successfully")
-        except Exception as e:
-            self.use_apt = False
-            print(f"[CAPE-SGG] APT module not available: {e}. Using static embeddings.")
+        self.use_apt = False
+        if config.MODEL.ROI_RELATION_HEAD.CAPE.USE_APT:
+            try:
+                from maskrcnn_benchmark.modeling.adpative_modeling import CoreModule as APTModule
+                self.apt_obj = APTModule(
+                    prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
+                    hidden_dim=512, prompt_length=5
+                )
+                self.apt_rel = APTModule(
+                    prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
+                    hidden_dim=512, prompt_length=5
+                )
+                self.use_apt = True
+                print("[CAPE-SGG] APT module loaded successfully")
+            except Exception as e:
+                print(f"[CAPE-SGG] APT module not available: {e}. Using static embeddings.")
+        else:
+            print("[CAPE-SGG] APT disabled (ablation mode)")
 
         # ============================================================
         # PE-NET core modules (unchanged)
@@ -1170,50 +1172,92 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
         # Proto dim is the output of project_head: mlp_dim*2 = 4096
         self.proto_dim = self.mlp_dim * 2  
         
-        self.capm = CAPM(
-            clip_embed_dim=clip_embed_dim,
-            proto_dim=self.proto_dim,
-            num_obj_cls=self.num_obj_cls,
-            num_rel_cls=self.num_rel_cls,
-            context_hidden_dim=512,
-            temperature=1.0,
-            num_heads=4,
-            clip_embed_path=clip_embed_path,
-        )
-        print("[CAPE-SGG] CAPM module initialized")
+        # ============================================================
+        # CAPM: Context-Aware Prototype Modulation (config-controlled)
+        # ============================================================
+        cape_cfg = config.MODEL.ROI_RELATION_HEAD.CAPE
+        self.use_capm = cape_cfg.USE_CAPM
+        self.use_fasa_flag = cape_cfg.USE_FASA
+        capm_variant = cape_cfg.CAPM_VARIANT
+        
+        if self.use_capm:
+            if capm_variant == 'context_bias':
+                # Ablation A7: logit-space bias instead of prototype modulation
+                self.context_bias = ContextBiasBaseline(
+                    clip_embed_dim=clip_embed_dim,
+                    num_obj_cls=self.num_obj_cls,
+                    num_rel_cls=self.num_rel_cls,
+                    context_hidden_dim=512,
+                    clip_embed_path=clip_embed_path,
+                )
+                self.capm = None
+                print(f"[CAPE-SGG] Using ContextBiasBaseline (ablation A7)")
+            elif capm_variant == 'learnable_gate':
+                # Ablation A8: learnable gate instead of CLIP-semantic gate
+                self.capm = LearnableGateCAPM(
+                    clip_embed_dim=clip_embed_dim,
+                    proto_dim=self.proto_dim,
+                    num_obj_cls=self.num_obj_cls,
+                    num_rel_cls=self.num_rel_cls,
+                    context_hidden_dim=512,
+                    temperature=cape_cfg.CAPM_TEMPERATURE,
+                    num_heads=cape_cfg.CAPM_NUM_HEADS,
+                    clip_embed_path=clip_embed_path,
+                )
+                self.context_bias = None
+                print(f"[CAPE-SGG] Using LearnableGateCAPM (ablation A8)")
+            else:
+                # Default: full CAPM
+                self.capm = CAPM(
+                    clip_embed_dim=clip_embed_dim,
+                    proto_dim=self.proto_dim,
+                    num_obj_cls=self.num_obj_cls,
+                    num_rel_cls=self.num_rel_cls,
+                    context_hidden_dim=512,
+                    temperature=cape_cfg.CAPM_TEMPERATURE,
+                    num_heads=cape_cfg.CAPM_NUM_HEADS,
+                    clip_embed_path=clip_embed_path,
+                )
+                self.context_bias = None
+                print(f"[CAPE-SGG] CAPM module initialized (heads={cape_cfg.CAPM_NUM_HEADS}, τ={cape_cfg.CAPM_TEMPERATURE})")
+        else:
+            self.capm = None
+            self.context_bias = None
+            print("[CAPE-SGG] CAPM disabled (ablation mode)")
 
         # ============================================================
-        # FASA: Frequency-Aware Semantic Anchoring
+        # FASA: Frequency-Aware Semantic Anchoring (config-controlled)
         # ============================================================
-        # Compute predicate frequencies from dataset statistics
-        # NOTE: statistics dict has 'fg_matrix' [num_obj, num_obj, num_rel] but NOT 'pred_freq'
-        predicate_freq = None
-        if 'fg_matrix' in statistics:
-            # Sum fg_matrix across both object dimensions to get per-predicate counts
-            fg = statistics['fg_matrix']
-            predicate_freq = fg.sum(0).sum(0).float().tolist()  # [num_rel_cls]
-            predicate_freq[0] = 0.0  # CRITICAL: exclude background class from frequency weighting
-            print(f"[CAPE-SGG] Predicate freq from fg_matrix (bg excluded): min={min(predicate_freq[1:]):.0f}, max={max(predicate_freq[1:]):.0f}, median={sorted(predicate_freq[1:])[len(predicate_freq[1:])//2]:.0f}")
-        
-        if predicate_freq is None or sum(predicate_freq) == 0:
-            # Fallback to REL_PROP from config (proportions, not raw counts, but still usable)
-            rel_prop = list(config.MODEL.ROI_RELATION_HEAD.REL_PROP)
-            if len(rel_prop) == self.num_rel_cls and sum(rel_prop) > 0:
-                predicate_freq = rel_prop
-                print(f"[CAPE-SGG] Using REL_PROP as predicate freq fallback")
-            else:
-                print(f"[CAPE-SGG WARNING] No predicate frequency available! FASA will use uniform weights.")
-        
-        self.fasa = FASA(
-            clip_embed_dim=clip_embed_dim,
-            proto_dim=self.proto_dim,
-            num_rel_cls=self.num_rel_cls,
-            temperature_k=2.0,
-            clip_embed_path=clip_embed_path,
-            predicate_freq=predicate_freq,
-        )
-        self.fasa_weight = 0.1  # λ₂ for FASA loss
-        print("[CAPE-SGG] FASA module initialized")
+        self.fasa_weight = cape_cfg.FASA_WEIGHT
+        if self.use_fasa_flag:
+            predicate_freq = None
+            if 'fg_matrix' in statistics:
+                fg = statistics['fg_matrix']
+                predicate_freq = fg.sum(0).sum(0).float().tolist()
+                predicate_freq[0] = 0.0  # CRITICAL: exclude background class
+                print(f"[CAPE-SGG] Predicate freq from fg_matrix (bg excluded): min={min(predicate_freq[1:]):.0f}, max={max(predicate_freq[1:]):.0f}, median={sorted(predicate_freq[1:])[len(predicate_freq[1:])//2]:.0f}")
+            
+            if predicate_freq is None or sum(predicate_freq) == 0:
+                rel_prop = list(config.MODEL.ROI_RELATION_HEAD.REL_PROP)
+                if len(rel_prop) == self.num_rel_cls and sum(rel_prop) > 0:
+                    predicate_freq = rel_prop
+                    predicate_freq[0] = 0.0
+                    print(f"[CAPE-SGG] Using REL_PROP as predicate freq fallback")
+                else:
+                    print(f"[CAPE-SGG WARNING] No predicate frequency available!")
+            
+            self.fasa = FASA(
+                clip_embed_dim=clip_embed_dim,
+                proto_dim=self.proto_dim,
+                num_rel_cls=self.num_rel_cls,
+                temperature_k=2.0,
+                clip_embed_path=clip_embed_path,
+                predicate_freq=predicate_freq,
+            )
+            print(f"[CAPE-SGG] FASA module initialized (weight={self.fasa_weight})")
+        else:
+            self.fasa = None
+            print("[CAPE-SGG] FASA disabled (ablation mode)")
 
         # ============================================================
         # Object label refinement (same as PE-NET)
@@ -1341,45 +1385,51 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
         rel_rep = self.project_head(self.dropout_rel(torch.relu(rel_rep)))
         predicate_proto = self.project_head(self.dropout_pred(torch.relu(predicate_proto)))
 
-        # ============ CAPM: Context-Aware Prototype Modulation ============
-        # CRITICAL: Process in chunks to avoid OOM. Full tensor [N_pairs, 51, 4096]
-        # would be ~10GB for a typical batch. Chunking limits peak memory.
+        # ============ Relation classification: CAPM or PE-NET fallback ============
         rel_rep_norm = rel_rep / (rel_rep.norm(dim=1, keepdim=True) + 1e-8)
         logit_scale = self.logit_scale.exp()
         
-        num_total_pairs = pair_pred.shape[0]
-        capm_chunk_size = 1024  # ~200MB per chunk (1024 * 51 * 4096 * 4)
-        
-        if num_total_pairs <= capm_chunk_size:
-            # Small enough to process at once
-            modulated_proto = self.capm(predicate_proto, pair_pred)
-            modulated_proto_norm = modulated_proto / (modulated_proto.norm(dim=-1, keepdim=True) + 1e-8)
-            rel_dists = torch.bmm(
-                rel_rep_norm.unsqueeze(1),
-                modulated_proto_norm.transpose(1, 2)
-            ).squeeze(1) * logit_scale
-        else:
-            # Chunked processing to avoid OOM
-            rel_dists_chunks = []
-            for chunk_start in range(0, num_total_pairs, capm_chunk_size):
-                chunk_end = min(chunk_start + capm_chunk_size, num_total_pairs)
-                chunk_proto = self.capm(predicate_proto, pair_pred[chunk_start:chunk_end])
-                chunk_proto_norm = chunk_proto / (chunk_proto.norm(dim=-1, keepdim=True) + 1e-8)
-                chunk_rep = rel_rep_norm[chunk_start:chunk_end]
-                chunk_dists = torch.bmm(
-                    chunk_rep.unsqueeze(1),
-                    chunk_proto_norm.transpose(1, 2)
+        if self.use_capm and self.capm is not None:
+            # CAPM path: per-pair modulated prototypes → cosine similarity
+            num_total_pairs = pair_pred.shape[0]
+            capm_chunk_size = 1024
+            
+            if num_total_pairs <= capm_chunk_size:
+                modulated_proto = self.capm(predicate_proto, pair_pred)
+                modulated_proto_norm = modulated_proto / (modulated_proto.norm(dim=-1, keepdim=True) + 1e-8)
+                rel_dists = torch.bmm(
+                    rel_rep_norm.unsqueeze(1),
+                    modulated_proto_norm.transpose(1, 2)
                 ).squeeze(1) * logit_scale
-                rel_dists_chunks.append(chunk_dists)
-                del chunk_proto, chunk_proto_norm  # free memory immediately
-            rel_dists = cat(rel_dists_chunks, dim=0)
+            else:
+                rel_dists_chunks = []
+                for chunk_start in range(0, num_total_pairs, capm_chunk_size):
+                    chunk_end = min(chunk_start + capm_chunk_size, num_total_pairs)
+                    chunk_proto = self.capm(predicate_proto, pair_pred[chunk_start:chunk_end])
+                    chunk_proto_norm = chunk_proto / (chunk_proto.norm(dim=-1, keepdim=True) + 1e-8)
+                    chunk_rep = rel_rep_norm[chunk_start:chunk_end]
+                    chunk_dists = torch.bmm(
+                        chunk_rep.unsqueeze(1),
+                        chunk_proto_norm.transpose(1, 2)
+                    ).squeeze(1) * logit_scale
+                    rel_dists_chunks.append(chunk_dists)
+                    del chunk_proto, chunk_proto_norm
+                rel_dists = cat(rel_dists_chunks, dim=0)
+        else:
+            # PE-NET fallback: static cosine similarity (used when CAPM disabled)
+            predicate_proto_norm_cls = predicate_proto / (predicate_proto.norm(dim=1, keepdim=True) + 1e-8)
+            rel_dists = rel_rep_norm @ predicate_proto_norm_cls.t() * logit_scale
+        
+        # Ablation A7: ContextBiasBaseline adds logit-space bias AFTER cosine similarity
+        if self.use_capm and self.context_bias is not None:
+            rel_dists = self.context_bias(rel_dists, pair_pred)
 
         entity_dists = entity_dists.split(num_objs, dim=0)
         rel_dists = rel_dists.split(num_rels, dim=0)
 
         # ============ Training losses ============
         if self.training:
-            predicate_proto_norm = predicate_proto / predicate_proto.norm(dim=1, keepdim=True)
+            predicate_proto_norm = predicate_proto / (predicate_proto.norm(dim=1, keepdim=True) + 1e-8)
 
             # PE-NET Prototype Regularization (cosine similarity)
             target_rpredicate_proto_norm = predicate_proto_norm.clone().detach()
@@ -1417,8 +1467,9 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             add_losses.update({"loss_dis": loss_sum})
 
             # ============ FASA: Frequency-Aware Semantic Anchoring loss ============
-            fasa_loss = self.fasa(predicate_proto)
-            add_losses.update({"fasa_loss": fasa_loss * self.fasa_weight})
+            if self.use_fasa_flag and self.fasa is not None:
+                fasa_loss = self.fasa(predicate_proto)
+                add_losses.update({"fasa_loss": fasa_loss * self.fasa_weight})
 
         return entity_dists, rel_dists, add_losses, add_data
 
