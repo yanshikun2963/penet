@@ -1082,8 +1082,14 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             self.register_buffer('clip_rel_raw', clip_rel)
             
             # Learnable blend factor: output = (1-α)*GloVe + α*CLIP_proj
-            self.clip_blend_obj = nn.Parameter(torch.tensor(0.3))
-            self.clip_blend_rel = nn.Parameter(torch.tensor(0.3))
+            # BUG FIX: Init blend to sigmoid(-2.0)≈0.12 instead of sigmoid(0.3)≈0.57
+            # Original value meant 57% of embedding came from UNTRAINED CLIP projections (noise)
+            self.clip_blend_obj = nn.Parameter(torch.tensor(-2.0))
+            self.clip_blend_rel = nn.Parameter(torch.tensor(-2.0))
+            
+            # BUG FIX: Init CLIP projections small so initial contribution is minimal
+            nn.init.xavier_uniform_(self.clip_obj_proj.weight, gain=0.1)
+            nn.init.xavier_uniform_(self.clip_rel_proj.weight, gain=0.1)
             
             self.use_clip_bridge = True
             print(f"[CAPE-SGG] CLIP semantic bridge: {clip_dim}d → {self.embed_dim}d, blended with GloVe")

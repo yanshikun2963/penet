@@ -22,6 +22,12 @@ class CoreModule(nn.Module):
             nn.Linear(hidden_dim, prompt_dim)
         )
         
+        # BUG FIX: Learnable residual gate — initialized to sigmoid(-3) ≈ 0.047
+        # Without this, the fusion_mlp COMPLETELY REPLACES the input GloVe embedding
+        # with a random MLP output, destroying PE-NET's semantic initialization.
+        # Now: output = (1-gate)*e_static + gate*mlp_output, starting near identity.
+        self.residual_gate = nn.Parameter(torch.tensor(-3.0))
+        
         # Initialize parameters
         self._init_weights()
     
@@ -29,6 +35,9 @@ class CoreModule(nn.Module):
         """Initialize weights"""
         for param in [self.detection_prompt, self.relation_prompt]:
             nn.init.xavier_uniform_(param)
+        # BUG FIX: Initialize fusion MLP last layer near zero for safe residual startup
+        nn.init.zeros_(self.fusion_mlp[-1].weight)
+        nn.init.zeros_(self.fusion_mlp[-1].bias)
     
     def forward(self, e_static, v_visual, role='general'):
         """
@@ -63,7 +72,11 @@ class CoreModule(nn.Module):
         
         # Feature fusion
         combined = torch.cat([p_agg, e_static, v_proj], dim=-1)  # [batch_size, 3*prompt_dim]
-        e_adapted = self.fusion_mlp(combined)     # [batch_size, prompt_dim]
+        delta = self.fusion_mlp(combined)     # [batch_size, prompt_dim]
+        
+        # BUG FIX: Residual connection — preserves GloVe embeddings
+        gate = torch.sigmoid(self.residual_gate)
+        e_adapted = (1 - gate) * e_static + gate * delta
         
         if single_input:
             e_adapted = e_adapted.squeeze(0)

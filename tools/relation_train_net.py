@@ -102,7 +102,13 @@ def train(cfg, local_rank, distributed, logger):
 
     save_to_disk = get_rank() == 0
     checkpointer = DetectronCheckpointer(
-        cfg, model, optimizer, scheduler, output_dir, save_to_disk, custom_scheduler=True
+        # FIX: Changed custom_scheduler from True to False.
+        # With True, the scheduler state (stage_count, best metric, warmup position)
+        # was NEVER saved to checkpoints. After training interruption + resume,
+        # the scheduler reset to stage_count=0 and restarted warmup, causing the
+        # model to receive corrupted LR trajectories (e.g., 7 total decay steps
+        # instead of 3, with warmup re-applied mid-training).
+        cfg, model, optimizer, scheduler, output_dir, save_to_disk, custom_scheduler=False
     )
     # if there is certain checkpoint in output_dir, load it, else load pretrained detector
     if checkpointer.has_checkpoint():

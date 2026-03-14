@@ -61,10 +61,10 @@ class FASA(nn.Module):
         else:
             self.register_buffer('freq_weights', torch.ones(num_rel_cls))
         
-        # Initialize
+        # BUG FIX: Init anchor_proj with gain=0.5 (was 0.1, producing near-zero output)
         for m in self.anchor_proj:
             if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.1)
+                nn.init.xavier_uniform_(m.weight, gain=0.5)
                 nn.init.zeros_(m.bias)
     
     def _compute_freq_weights(self, predicate_freq):
@@ -95,15 +95,18 @@ class FASA(nn.Module):
         Returns:
             anchor_loss: scalar
         """
-        anchors = self.compute_anchors().detach()  # stop gradient
+        # BUG FIX: DO NOT detach anchors — let anchor_proj learn meaningful positions.
+        # Original code had .detach() which completely blocked all gradients to anchor_proj,
+        # making anchors stay at random initialization forever. FASA was pulling prototypes
+        # toward RANDOM NOISE, actively hurting performance.
+        anchors = self.compute_anchors()
         
-        # Rescale anchors to match prototype magnitude so L2 distance is meaningful.
-        # Without this, anchor_proj (frozen, gain=0.1 init) produces ~O(0.0001) values
-        # while prototypes are ~O(1), making L2 loss degenerate to weight decay.
+        # Rescale anchors to match prototype magnitude
         with torch.no_grad():
             proto_scale = predicate_proto.detach().norm(dim=-1).mean().clamp(min=1e-8)
-            anchor_scale = anchors.norm(dim=-1).mean().clamp(min=1e-8)
-        anchors = anchors * (proto_scale / anchor_scale)
+            anchor_scale = anchors.detach().norm(dim=-1).mean().clamp(min=1e-8)
+            scale_ratio = proto_scale / anchor_scale
+        anchors = anchors * scale_ratio
         
         loss = torch.tensor(0.0, device=predicate_proto.device)
         
@@ -114,9 +117,9 @@ class FASA(nn.Module):
             cos_dist = 1.0 - (proto_norm * anchor_norm).sum(dim=-1)  # [num_rel_cls]
             loss = loss + self.cos_weight * (self.freq_weights * cos_dist).mean()
         
-        # L2 component (now meaningful because anchors are rescaled)
+        # L2 component: BUG FIX — detach prototypes so L2 only trains anchor_proj
         if self.l2_weight > 0:
-            l2_dist = (predicate_proto - anchors).pow(2).sum(dim=-1)
+            l2_dist = (predicate_proto.detach() - anchors).pow(2).sum(dim=-1)
             l2_dist = l2_dist / predicate_proto.shape[-1]
             loss = loss + self.l2_weight * (self.freq_weights * l2_dist).mean()
         
