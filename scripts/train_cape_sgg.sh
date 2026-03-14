@@ -26,6 +26,12 @@ fi
 
 echo "=== Training CAPE-SGG: Mode=$MODE, GPU=$GPU ==="
 
+# LR schedule notes:
+# PE-NET baseline: batch=8, BASE_LR=0.001 (effective=0.008), steps=(28000,48000), MAX_ITER=60000
+# Linear scaling rule: when batch increases by k, LR increases by k, milestones decrease by k.
+# - batch=12: BASE_LR=0.001 (eff=0.012), steps=(19000,32000), MAX_ITER=40000
+# - batch=8:  BASE_LR=0.001 (eff=0.008),  steps=(28000,48000), MAX_ITER=60000
+
 if [ "$MODE" == "predcls" ]; then
     CUDA_VISIBLE_DEVICES=$GPU torchrun \
         --master_port 10025 --nproc_per_node=1 \
@@ -41,9 +47,9 @@ if [ "$MODE" == "predcls" ]; then
         SOLVER.BASE_LR 0.001 \
         SOLVER.WARMUP_FACTOR 0.01 \
         SOLVER.WARMUP_ITERS 1000 \
-        SOLVER.MAX_ITER 60000 \
+        SOLVER.MAX_ITER 40000 \
         SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
-        SOLVER.STEPS "(28000, 48000)" \
+        SOLVER.STEPS "(19000, 32000)" \
         SOLVER.VAL_PERIOD 2000 \
         SOLVER.CHECKPOINT_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
@@ -64,14 +70,15 @@ elif [ "$MODE" == "sgcls" ]; then
         SOLVER.BASE_LR 0.001 \
         SOLVER.WARMUP_FACTOR 0.01 \
         SOLVER.WARMUP_ITERS 1000 \
-        SOLVER.MAX_ITER 60000 \
+        SOLVER.MAX_ITER 40000 \
         SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
-        SOLVER.STEPS "(28000, 48000)" \
+        SOLVER.STEPS "(19000, 32000)" \
         SOLVER.VAL_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
         OUTPUT_DIR "./output/cape_sgg_sgcls"
 
 elif [ "$MODE" == "sgdet" ]; then
+    # SGDet uses batch=8 (same as PE-NET), so milestones are unchanged
     CUDA_VISIBLE_DEVICES=$GPU torchrun \
         --master_port 10027 --nproc_per_node=1 \
         tools/relation_train_net.py \

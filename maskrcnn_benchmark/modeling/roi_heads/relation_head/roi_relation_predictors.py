@@ -1109,16 +1109,14 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
         if config.MODEL.ROI_RELATION_HEAD.CAPE.USE_APT:
             try:
                 from maskrcnn_benchmark.modeling.adpative_modeling import CoreModule as APTModule
+                # APT only for entity embeddings (per-instance visual context).
+                # APT on predicate prototypes was REMOVED — union_visual.mean() is noise.
                 self.apt_obj = APTModule(
                     prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
                     hidden_dim=512, prompt_length=5
                 )
-                self.apt_rel = APTModule(
-                    prompt_dim=self.embed_dim, visual_dim=self.mlp_dim,
-                    hidden_dim=512, prompt_length=5
-                )
                 self.use_apt = True
-                print("[CAPE-SGG] APT module loaded successfully")
+                print("[CAPE-SGG] APT module loaded (entity embeddings only)")
             except Exception as e:
                 print(f"[CAPE-SGG] APT module not available: {e}. Using static embeddings.")
         else:

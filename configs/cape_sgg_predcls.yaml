@@ -116,9 +116,12 @@ SOLVER:
   GRAD_NORM_CLIP: 5.0
   # BUG FIX: Use same fixed LR schedule as PE-NET. ReduceLROnPlateau caused premature
   # termination at ~46k iters (3 decays triggered by noisy validation metric).
-  # PE-NET uses WarmupMultiStepLR with steps at (28000, 48000) for 60k iterations.
-  STEPS: (28000, 48000)
-  MAX_ITER: 60000
+  # PE-NET uses WarmupMultiStepLR with steps (28000, 48000) for 60k iters at batch=8.
+  # With batch=12, each iteration covers 1.5x more data, so milestones must come 1.5x earlier:
+  #   28000 × 8/12 ≈ 19000,  48000 × 8/12 = 32000,  60000 × 8/12 = 40000
+  # This ensures the model sees the same number of images at each LR transition.
+  STEPS: (19000, 32000)
+  MAX_ITER: 40000
   VAL_PERIOD: 2000
   CHECKPOINT_PERIOD: 2000
   PRINT_GRAD_FREQ: 4000
