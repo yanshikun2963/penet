@@ -21,7 +21,21 @@ class FASA(nn.Module):
     """
     Frequency-Aware Semantic Anchoring.
     
-    Loss: L_anchor = Σ_c α_c · (λ_cos · (1 - cos(p_c, sg(a_c))) + λ_l2 · ||p_c - sg(a_c)||²_norm)
+    BUG FIX: Complete redesign of anchor computation.
+    
+    Previous bugs (both present simultaneously):
+    1. When anchors were detached: anchor_proj never received gradients, so anchors
+       stayed at RANDOM initialization. FASA pulled prototypes toward random noise.
+    2. When anchors were NOT detached: cosine loss created mutual attraction between
+       anchors and prototypes. L2 loss trained anchor_proj to track prototype positions.
+       Net result: anchors collapsed to match prototypes, providing ZERO regularization.
+    
+    Fix: Use FIXED anchors pre-computed at initialization via orthogonal projection
+    of CLIP predicate embeddings. Anchors preserve CLIP's semantic structure (relative
+    distances between predicates) and never change during training. Only the cosine
+    loss is used, pulling prototypes toward these fixed semantic positions.
+    
+    Loss: L_anchor = Σ_c α_c · (1 - cos(p_c, a_c_fixed))
     where α_c = sigmoid(k · (log(N_median) - log(N_c)))
     """
     
@@ -32,8 +46,6 @@ class FASA(nn.Module):
         
         self.num_rel_cls = num_rel_cls
         self.temperature_k = temperature_k
-        self.cos_weight = cos_weight
-        self.l2_weight = l2_weight
         
         # Load CLIP predicate embeddings
         if clip_embed_path is not None and os.path.exists(clip_embed_path):
@@ -47,25 +59,23 @@ class FASA(nn.Module):
             self.register_buffer('clip_pred_embeds', torch.randn(num_rel_cls, clip_embed_dim))
             print(f"[FASA WARNING] No CLIP embeddings at {clip_embed_path}.")
         
-        # Multi-layer anchor projection with bottleneck
-        bottleneck_dim = min(clip_embed_dim, 512)
-        self.anchor_proj = nn.Sequential(
-            nn.Linear(clip_embed_dim, bottleneck_dim),
-            nn.ReLU(inplace=True),
-            nn.Linear(bottleneck_dim, proto_dim),
-        )
+        # BUG FIX: Pre-compute FIXED anchors using orthogonal random projection.
+        # This preserves CLIP's semantic structure (relative predicate distances)
+        # in the proto_dim space, without any trainable parameters that could
+        # cause anchor collapse.
+        proj_matrix = torch.empty(clip_embed_dim, proto_dim)
+        nn.init.orthogonal_(proj_matrix)
+        with torch.no_grad():
+            fixed_anchors = self.clip_pred_embeds @ proj_matrix  # [num_rel_cls, proto_dim]
+            fixed_anchors = F.normalize(fixed_anchors, dim=-1)  # normalize for cosine
+        self.register_buffer('fixed_anchors', fixed_anchors)
+        print(f"[FASA] Fixed anchors computed: CLIP {clip_embed_dim}d → proto {proto_dim}d (orthogonal projection)")
         
         # Frequency-aware weights
         if predicate_freq is not None:
             self._compute_freq_weights(predicate_freq)
         else:
             self.register_buffer('freq_weights', torch.ones(num_rel_cls))
-        
-        # BUG FIX: Init anchor_proj with gain=0.5 (was 0.1, producing near-zero output)
-        for m in self.anchor_proj:
-            if isinstance(m, nn.Linear):
-                nn.init.xavier_uniform_(m.weight, gain=0.5)
-                nn.init.zeros_(m.bias)
     
     def _compute_freq_weights(self, predicate_freq):
         """α_c = sigmoid(k · (log(N_median) - log(N_c)))
@@ -83,52 +93,25 @@ class FASA(nn.Module):
     def set_predicate_freq(self, predicate_freq):
         self._compute_freq_weights(predicate_freq)
     
-    def compute_anchors(self):
-        return self.anchor_proj(self.clip_pred_embeds)  # [num_rel_cls, proto_dim]
-    
     def forward(self, predicate_proto):
         """
-        Compute FASA anchoring loss (cosine + normalized L2).
+        Compute FASA anchoring loss (cosine only, with fixed anchors).
         
         Args:
             predicate_proto: [num_rel_cls, proto_dim]
         Returns:
             anchor_loss: scalar
         """
-        # BUG FIX: DO NOT detach anchors — let anchor_proj learn meaningful positions.
-        # Original code had .detach() which completely blocked all gradients to anchor_proj,
-        # making anchors stay at random initialization forever. FASA was pulling prototypes
-        # toward RANDOM NOISE, actively hurting performance.
-        anchors = self.compute_anchors()
-        
-        # Rescale anchors to match prototype magnitude
-        with torch.no_grad():
-            proto_scale = predicate_proto.detach().norm(dim=-1).mean().clamp(min=1e-8)
-            anchor_scale = anchors.detach().norm(dim=-1).mean().clamp(min=1e-8)
-            scale_ratio = proto_scale / anchor_scale
-        anchors = anchors * scale_ratio
-        
-        loss = torch.tensor(0.0, device=predicate_proto.device)
-        
-        # Cosine distance component (scale-invariant)
-        if self.cos_weight > 0:
-            proto_norm = F.normalize(predicate_proto, dim=-1)
-            anchor_norm = F.normalize(anchors, dim=-1)
-            cos_dist = 1.0 - (proto_norm * anchor_norm).sum(dim=-1)  # [num_rel_cls]
-            loss = loss + self.cos_weight * (self.freq_weights * cos_dist).mean()
-        
-        # L2 component: BUG FIX — detach prototypes so L2 only trains anchor_proj
-        if self.l2_weight > 0:
-            l2_dist = (predicate_proto.detach() - anchors).pow(2).sum(dim=-1)
-            l2_dist = l2_dist / predicate_proto.shape[-1]
-            loss = loss + self.l2_weight * (self.freq_weights * l2_dist).mean()
+        # Cosine distance: pull prototypes toward fixed CLIP-based anchors.
+        # Anchors are buffers (no grad), so only prototypes receive gradient.
+        proto_norm = F.normalize(predicate_proto, dim=-1)
+        cos_dist = 1.0 - (proto_norm * self.fixed_anchors).sum(dim=-1)  # [num_rel_cls]
+        loss = (self.freq_weights * cos_dist).mean()
         
         return loss
     
     def get_anchor_distances(self, predicate_proto):
         """Per-class analysis."""
         with torch.no_grad():
-            anchors = self.compute_anchors()
-            l2 = (predicate_proto - anchors).pow(2).sum(dim=-1).sqrt()
-            cos = F.cosine_similarity(predicate_proto, anchors, dim=-1)
-        return {'l2_distances': l2, 'cosine_sim': cos, 'freq_weights': self.freq_weights}
+            cos = F.cosine_similarity(predicate_proto, self.fixed_anchors, dim=-1)
+        return {'cosine_sim': cos, 'freq_weights': self.freq_weights}
