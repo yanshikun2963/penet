@@ -35,12 +35,15 @@ if [ "$MODE" == "predcls" ]; then
         MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL True \
         MODEL.ROI_RELATION_HEAD.PREDICTOR "CAPEPrototypeEmbeddingNetwork" \
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
+        MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
         SOLVER.IMS_PER_BATCH 12 \
         TEST.IMS_PER_BATCH 2 \
-        SOLVER.BASE_LR 0.002 \
+        SOLVER.BASE_LR 0.001 \
         SOLVER.WARMUP_FACTOR 0.01 \
         SOLVER.WARMUP_ITERS 1000 \
-        SOLVER.MAX_ITER 50000 \
+        SOLVER.MAX_ITER 60000 \
+        SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
+        SOLVER.STEPS "(28000, 48000)" \
         SOLVER.VAL_PERIOD 2000 \
         SOLVER.CHECKPOINT_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
@@ -55,12 +58,15 @@ elif [ "$MODE" == "sgcls" ]; then
         MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL False \
         MODEL.ROI_RELATION_HEAD.PREDICTOR "CAPEPrototypeEmbeddingNetwork" \
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
+        MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
         SOLVER.IMS_PER_BATCH 12 \
         TEST.IMS_PER_BATCH 2 \
-        SOLVER.BASE_LR 0.002 \
+        SOLVER.BASE_LR 0.001 \
         SOLVER.WARMUP_FACTOR 0.01 \
         SOLVER.WARMUP_ITERS 1000 \
-        SOLVER.MAX_ITER 50000 \
+        SOLVER.MAX_ITER 60000 \
+        SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
+        SOLVER.STEPS "(28000, 48000)" \
         SOLVER.VAL_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
         OUTPUT_DIR "./output/cape_sgg_sgcls"
@@ -74,12 +80,15 @@ elif [ "$MODE" == "sgdet" ]; then
         MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL False \
         MODEL.ROI_RELATION_HEAD.PREDICTOR "CAPEPrototypeEmbeddingNetwork" \
         MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
+        MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
         SOLVER.IMS_PER_BATCH 8 \
         TEST.IMS_PER_BATCH 2 \
-        SOLVER.BASE_LR 0.002 \
+        SOLVER.BASE_LR 0.001 \
         SOLVER.WARMUP_FACTOR 0.01 \
         SOLVER.WARMUP_ITERS 1000 \
-        SOLVER.MAX_ITER 50000 \
+        SOLVER.MAX_ITER 60000 \
+        SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
+        SOLVER.STEPS "(28000, 48000)" \
         SOLVER.VAL_PERIOD 2000 \
         GLOVE_DIR "$GLOVE_DIR" \
         OUTPUT_DIR "./output/cape_sgg_sgdet"

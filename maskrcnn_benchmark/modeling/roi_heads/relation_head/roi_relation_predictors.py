@@ -1379,10 +1379,14 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             clip_rel_proj = self.clip_rel_proj(self.clip_rel_raw)
             blend = torch.sigmoid(self.clip_blend_rel)
             rel_embed_weight = (1 - blend) * rel_embed_weight + blend * clip_rel_proj
-        # APT: enhance predicate embeddings with union-region visual context
-        if self.use_apt:
-            union_visual_mean = union_visual.mean(dim=0, keepdim=True).expand(self.num_rel_cls, -1)
-            rel_embed_weight = self.apt_rel(rel_embed_weight, union_visual_mean, role='general')
+        # BUG FIX: Removed APT on predicate prototypes.
+        # Previous code: union_visual_mean = union_visual.mean(dim=0).expand(num_rel_cls, -1)
+        # This averaged ALL union visual features (thousands of diverse pair regions) into a
+        # single meaningless vector, then used it as "visual context" for ALL 51 predicate classes
+        # identically. Over training, as APT's gate opens, this noise vector gradually corrupts
+        # predicate embeddings that PE-NET's W_pred was carefully designed to process.
+        # APT is appropriate for entity embeddings (per-instance visual context) but NOT for
+        # class-level predicate prototypes where no per-class visual feature exists.
         
         predicate_proto = self.W_pred(rel_embed_weight)
 
@@ -1394,24 +1398,6 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
         # ============ Relation classification: CAPM or PE-NET fallback ============
         rel_rep_norm = rel_rep / (rel_rep.norm(dim=1, keepdim=True) + 1e-8)
         logit_scale = self.logit_scale.exp()
-        
-        # BUG FIX: Cache per-pair POSITIVE class modulated prototype for loss_dis.
-        # Previously, classification used CAPM-modulated prototypes, but loss_dis
-        # used UNMODULATED prototypes. This created contradictory gradient signals:
-        # CE loss pushed rel_rep toward modulated proto X', while loss_dis pushed
-        # rel_rep toward unmodulated proto X. The conflicting objectives destabilized
-        # training and caused both R@K and mR@K to drop ~5-9 points vs PE-NET.
-        #
-        # Memory-efficient approach: cache only the per-pair TRUE class modulated
-        # prototype [N_pairs, proto_dim] instead of full [N_pairs, C, proto_dim].
-        # For negative distances we use unmodulated prototypes (acceptable since
-        # CAPM delta is small and bounded by Tanh * mod_scale=0.1).
-        cached_pos_modulated = None  # [N_pairs, proto_dim] — only positive class
-        
-        # Pre-compute flat labels for positive proto extraction (training only)
-        _rel_labels_flat = None
-        if self.training and rel_labels is not None and self.use_capm and self.capm is not None:
-            _rel_labels_flat = cat(rel_labels, dim=0)
         
         if self.use_capm and self.capm is not None:
             # CAPM path: per-pair modulated prototypes → cosine similarity
@@ -1425,19 +1411,11 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
                     rel_rep_norm.unsqueeze(1),
                     modulated_proto_norm.transpose(1, 2)
                 ).squeeze(1) * logit_scale
-                if self.training and _rel_labels_flat is not None:
-                    # Extract per-pair positive class modulated proto: [N, D]
-                    cached_pos_modulated = modulated_proto[
-                        torch.arange(num_total_pairs, device=modulated_proto.device),
-                        _rel_labels_flat
-                    ]
                 del modulated_proto
             else:
                 rel_dists_chunks = []
-                pos_modulated_chunks = []
                 for chunk_start in range(0, num_total_pairs, capm_chunk_size):
                     chunk_end = min(chunk_start + capm_chunk_size, num_total_pairs)
-                    chunk_size = chunk_end - chunk_start
                     chunk_proto = self.capm(predicate_proto, pair_pred[chunk_start:chunk_end])
                     chunk_proto_norm = chunk_proto / (chunk_proto.norm(dim=-1, keepdim=True) + 1e-8)
                     chunk_rep = rel_rep_norm[chunk_start:chunk_end]
@@ -1446,15 +1424,8 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
                         chunk_proto_norm.transpose(1, 2)
                     ).squeeze(1) * logit_scale
                     rel_dists_chunks.append(chunk_dists)
-                    if self.training and _rel_labels_flat is not None:
-                        chunk_labels = _rel_labels_flat[chunk_start:chunk_end]
-                        pos_modulated_chunks.append(
-                            chunk_proto[torch.arange(chunk_size, device=chunk_proto.device), chunk_labels]
-                        )
                     del chunk_proto, chunk_proto_norm
                 rel_dists = cat(rel_dists_chunks, dim=0)
-                if pos_modulated_chunks:
-                    cached_pos_modulated = cat(pos_modulated_chunks, dim=0)
         else:
             # PE-NET fallback: static cosine similarity (used when CAPM disabled)
             predicate_proto_norm_cls = predicate_proto / (predicate_proto.norm(dim=1, keepdim=True) + 1e-8)
@@ -1491,18 +1462,19 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             add_losses.update({"dist_loss2": dist_loss})
 
             # PE-NET Prototype-based Learning (Euclidean distance)
-            # BUG FIX: When CAPM is active, use MODULATED positive prototype so that
-            # loss_dis is consistent with the CE classification loss. Both losses now
-            # push rel_rep toward the SAME (modulated) target, eliminating contradictory
-            # gradient signals.
+            # BUG FIX: Use UNMODULATED prototypes for ALL distances (both positive and negative).
+            # Previous version used CAPM-modulated proto for positive but unmodulated for negative,
+            # creating inconsistent training: d_pos was systematically smaller (modulated proto is
+            # closer to the pair) while d_neg stayed the same, weakening the triplet margin signal.
             #
-            # Memory-efficient: d_pos uses per-pair modulated proto [N, D],
-            # d_neg uses unmodulated protos [C, D] (acceptable approximation since
-            # CAPM delta is small and bounded by Tanh * mod_scale=0.1).
+            # Correct design: loss_dis regularizes the BASE prototype space (same as PE-NET).
+            # CAPM modulation only affects the CE classification logits. These are two orthogonal
+            # objectives: CE learns to classify with context-adapted protos, loss_dis ensures the
+            # base prototype geometry remains well-structured.
             rel_labels_flat = cat(rel_labels, dim=0)
             gamma1 = 1.0
             
-            # Compute NEGATIVE distances (always uses unmodulated prototypes)
+            # All distances use unmodulated prototypes (exactly PE-NET's computation)
             rel_rep_expand = rel_rep.unsqueeze(dim=1).expand(-1, C, -1)
             predicate_proto_expand = predicate_proto.unsqueeze(dim=0).expand(rel_labels_flat.size(0), -1, -1)
             distance_set = (rel_rep_expand - predicate_proto_expand).norm(dim=2) ** 2
@@ -1510,14 +1482,7 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
             mask_neg = torch.ones(rel_labels_flat.size(0), C, device=predicate_proto.device)
             mask_neg[torch.arange(rel_labels_flat.size(0)), rel_labels_flat] = 0
             distance_set_neg = distance_set * mask_neg
-            
-            # Compute POSITIVE distance
-            if cached_pos_modulated is not None:
-                # CAPM active: use per-pair modulated positive prototype
-                distance_set_pos = (rel_rep - cached_pos_modulated).norm(dim=1) ** 2
-            else:
-                # PE-NET fallback: use static prototype for positive class
-                distance_set_pos = distance_set[torch.arange(rel_labels_flat.size(0)), rel_labels_flat]
+            distance_set_pos = distance_set[torch.arange(rel_labels_flat.size(0)), rel_labels_flat]
             
             sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
             topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10
@@ -1526,9 +1491,6 @@ class CAPEPrototypeEmbeddingNetwork(nn.Module):
                 distance_set_pos - topK_sorted_distance_set_neg + gamma1
             ).mean()
             add_losses.update({"loss_dis": loss_sum})
-            
-            # Free cached positive modulated prototypes
-            del cached_pos_modulated
 
             # ============ FASA: Frequency-Aware Semantic Anchoring loss ============
             if self.use_fasa_flag and self.fasa is not None:
