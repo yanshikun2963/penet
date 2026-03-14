@@ -1,5 +1,5 @@
 #!/bin/bash
-# Experiment: exp1_full_cape
+# CAPE-SGG Variant: varA_cb_loss
 MODE=${1:-predcls}
 GPU=${2:-0}
 export PYTHONPATH=$(pwd):$PYTHONPATH
@@ -16,7 +16,7 @@ if [ ! -f "$CLIP_EMBED_PATH" ]; then
     fi
 fi
 
-echo "=== exp1_full_cape: Mode=$MODE, GPU=$GPU ==="
+echo "=== varA_cb_loss: Mode=$MODE, GPU=$GPU ==="
 
 if [ "$MODE" == "predcls" ]; then
     CUDA_VISIBLE_DEVICES=$GPU torchrun \
@@ -40,52 +40,8 @@ if [ "$MODE" == "predcls" ]; then
         SOLVER.CHECKPOINT_PERIOD 2000 \
         SOLVER.PRE_VAL False \
         GLOVE_DIR "$GLOVE_DIR" \
-        OUTPUT_DIR "./output/exp1_full_cape"
-
-elif [ "$MODE" == "sgcls" ]; then
-    CUDA_VISIBLE_DEVICES=$GPU torchrun \
-        --master_port 10025 --nproc_per_node=1 \
-        tools/relation_train_net.py \
-        --config-file "$CONFIG_FILE" \
-        MODEL.ROI_RELATION_HEAD.USE_GT_BOX True \
-        MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL False \
-        MODEL.ROI_RELATION_HEAD.PREDICTOR "CAPEPrototypeEmbeddingNetwork" \
-        MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
-        MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
-        SOLVER.IMS_PER_BATCH 8 \
-        TEST.IMS_PER_BATCH 2 \
-        SOLVER.BASE_LR 0.001 \
-        SOLVER.MAX_ITER 60000 \
-        SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
-        SOLVER.STEPS "(28000, 48000)" \
-        SOLVER.VAL_PERIOD 2000 \
-        SOLVER.CHECKPOINT_PERIOD 2000 \
-        SOLVER.PRE_VAL False \
-        GLOVE_DIR "$GLOVE_DIR" \
-        OUTPUT_DIR "./output/exp1_full_cape_sgcls"
-
-elif [ "$MODE" == "sgdet" ]; then
-    CUDA_VISIBLE_DEVICES=$GPU torchrun \
-        --master_port 10025 --nproc_per_node=1 \
-        tools/relation_train_net.py \
-        --config-file "$CONFIG_FILE" \
-        MODEL.ROI_RELATION_HEAD.USE_GT_BOX False \
-        MODEL.ROI_RELATION_HEAD.USE_GT_OBJECT_LABEL False \
-        MODEL.ROI_RELATION_HEAD.PREDICTOR "CAPEPrototypeEmbeddingNetwork" \
-        MODEL.PRETRAINED_DETECTOR_CKPT ./checkpoints/pretrained_faster_rcnn/model_final.pth \
-        MODEL.ROI_RELATION_HEAD.BATCH_SIZE_PER_IMAGE 512 \
-        SOLVER.IMS_PER_BATCH 8 \
-        TEST.IMS_PER_BATCH 2 \
-        SOLVER.BASE_LR 0.001 \
-        SOLVER.MAX_ITER 60000 \
-        SOLVER.SCHEDULE.TYPE "WarmupMultiStepLR" \
-        SOLVER.STEPS "(28000, 48000)" \
-        SOLVER.VAL_PERIOD 2000 \
-        SOLVER.CHECKPOINT_PERIOD 2000 \
-        SOLVER.PRE_VAL False \
-        GLOVE_DIR "$GLOVE_DIR" \
-        OUTPUT_DIR "./output/exp1_full_cape_sgdet"
+        OUTPUT_DIR "./output/varA_cb_loss"
 else
-    echo "Unknown mode: $MODE"; exit 1
+    echo "Only predcls mode for now"; exit 1
 fi
 echo "=== Done ==="

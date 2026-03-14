@@ -43,7 +43,21 @@ class RelationLossComputation(object):
         if self.use_label_smoothing:
             self.criterion_loss = Label_Smoothing_Regression(e=0.01)
         else:
-            self.criterion_loss = nn.CrossEntropyLoss()
+            # CAPE Variant A: Class-Balanced Effective Number Weighted CE
+            # Uses the "effective number" reweighting from Cui et al. CVPR 2019
+            # w_c = (1-beta) / (1-beta^{n_c}), beta = 0.9999
+            # This upweights tail predicates (e.g., "walking in", "flying in")
+            # and downweights head predicates (e.g., "on", "has", "wearing")
+            beta = 0.9999
+            freq = torch.FloatTensor([0.5] + predicate_proportion)
+            freq = freq.clamp(min=1.0)
+            effective_num = 1.0 - torch.pow(beta, freq)
+            cb_weights = (1.0 - beta) / effective_num
+            cb_weights = cb_weights / cb_weights.sum() * len(cb_weights)  # normalize
+            cb_weights[0] = cb_weights[0] * 0.1  # reduce background weight
+            print(f"[CAPE-A] CB weights: min={cb_weights[1:].min():.3f}, max={cb_weights[1:].max():.3f}, "
+                  f"ratio={cb_weights[1:].max()/cb_weights[1:].min():.1f}x")
+            self.criterion_loss = nn.CrossEntropyLoss(weight=cb_weights.cuda())
 
 
     def __call__(self, proposals, rel_labels, relation_logits, refine_logits):
