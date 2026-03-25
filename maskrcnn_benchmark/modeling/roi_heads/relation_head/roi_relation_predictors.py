@@ -105,17 +105,15 @@ class PrototypeEmbeddingNetwork(nn.Module):
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
         ##### Semantic-Aware Prototype Separation (SAPS)
-        # Compute GloVe-based semantic similarity between predicate prototypes
+        # Pre-compute GloVe semantic similarity between predicate classes
         with torch.no_grad():
             glove_norms = rel_embed_vecs / (rel_embed_vecs.norm(dim=1, keepdim=True) + 1e-8)
             glove_sim = glove_norms @ glove_norms.t()  # (num_rel_cls, num_rel_cls)
-            # Zero out diagonal (self-similarity)
-            glove_sim.fill_diagonal_(0.0)
-            # Only keep positive similarities (semantically related pairs)
-            glove_sim = torch.clamp(glove_sim, min=0.0)
+            glove_sim.fill_diagonal_(0.0)  # remove self-similarity
+            glove_sim = torch.clamp(glove_sim, min=0.0)  # keep positive similarities only
         self.register_buffer('glove_sim_matrix', glove_sim)
-        self.saps_lambda = 0.5  # Weight for SAPS loss
-        self.saps_margin = 10.0  # Target minimum distance for high-similarity pairs
+        self.saps_lambda = 0.5
+        self.saps_margin = 10.0
         #####
 
         ##### refine object labels
@@ -240,14 +238,10 @@ class PrototypeEmbeddingNetwork(nn.Module):
             add_losses.update({"dist_loss2": dist_loss})
             ### end 
 
-            ### Semantic-Aware Prototype Separation (SAPS)
-            # Push semantically similar prototypes further apart using adaptive margins
-            proto_dis_normalized = proto_dis_mat / (proto_dis_mat.max() + 1e-8)  # normalize distances to [0,1]
-            # Weighted margin: high GloVe similarity -> larger required distance
+            ### Semantic-Aware Prototype Separation (SAPS) loss
+            # Adaptively push semantically similar prototypes apart
             weighted_margin = self.saps_margin * self.glove_sim_matrix  # (51, 51)
-            # Loss: for each pair (i,j), if sim(i,j) > 0, push ||ci - cj||^2 >= margin * sim(i,j) 
-            saps_violation = torch.clamp(weighted_margin - proto_dis_mat, min=0.0)  # (51, 51)
-            # Weight violations by semantic similarity (focus on highly similar pairs)
+            saps_violation = torch.clamp(weighted_margin - proto_dis_mat, min=0.0)
             saps_loss = (saps_violation * self.glove_sim_matrix).sum() / (self.glove_sim_matrix.sum() + 1e-8)
             add_losses.update({"saps_loss": self.saps_lambda * saps_loss})
             ### end
