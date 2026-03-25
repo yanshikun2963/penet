@@ -102,7 +102,9 @@ class PrototypeEmbeddingNetwork(nn.Module):
        
         self.down_samp = MLP(self.pooling_dim, self.mlp_dim, self.mlp_dim, 2) 
 
-        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
+        # Per-class learnable temperature: each predicate class has its own temperature
+        # initialized to the same value as original global temperature τ = 0.07
+        self.logit_scale = nn.Parameter(torch.ones(self.num_rel_cls) * np.log(1 / 0.07))
 
         ##### refine object labels
         self.pos_embed = nn.Sequential(*[
