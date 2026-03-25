@@ -34,11 +34,8 @@ import numpy as np
 import random
 
 # See if we can use apex.DistributedDataParallel instead of the torch default,
-# and enable mixed-precision via apex.amp
-try:
-    from apex import amp
-except ImportError:
-    raise ImportError('Use APEX for multi-precision via apex.amp')
+# Mixed-precision via PyTorch native amp (apex removed)
+from torch.cuda.amp import autocast, GradScaler
 
 
 def setup_seed(seed):
@@ -89,8 +86,8 @@ def train(cfg, local_rank, distributed, logger):
     debug_print(logger, 'end optimizer and shcedule')
     # Initialize mixed-precision training
     use_mixed_precision = cfg.DTYPE == "float16"
-    amp_opt_level = 'O1' if use_mixed_precision else 'O0'
-    model, optimizer = amp.initialize(model, optimizer, opt_level=amp_opt_level)
+    # PyTorch native AMP scaler (replaces apex amp.initialize)
+    scaler = GradScaler(enabled=use_mixed_precision)
 
     if distributed:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -169,8 +166,10 @@ def train(cfg, local_rank, distributed, logger):
         optimizer.zero_grad()
         # Note: If mixed precision is not used, this ends up doing nothing
         # Otherwise apply loss scaling for mixed-precision recipe
-        with amp.scale_loss(losses, optimizer) as scaled_losses:
-            scaled_losses.backward()
+        if use_mixed_precision:
+            scaler.scale(losses).backward()
+        else:
+            losses.backward()
         
         # add clip_grad_norm from MOTIFS, tracking gradient, used for debug
         verbose = (iteration % cfg.SOLVER.PRINT_GRAD_FREQ) == 0 or print_first_grad # print grad or not
