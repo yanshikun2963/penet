@@ -104,17 +104,32 @@ class PrototypeEmbeddingNetwork(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-        ##### Semantic-Aware Prototype Separation (SAPS)
-        # Pre-compute GloVe semantic similarity between predicate classes
-        with torch.no_grad():
-            glove_norms = rel_embed_vecs / (rel_embed_vecs.norm(dim=1, keepdim=True) + 1e-8)
-            glove_sim = glove_norms @ glove_norms.t()  # (num_rel_cls, num_rel_cls)
-            glove_sim.fill_diagonal_(0.0)  # remove self-similarity
-            glove_sim = torch.clamp(glove_sim, min=0.0)  # keep positive similarities only
-        self.register_buffer('glove_sim_matrix', glove_sim)
-        self.saps_lambda = 0.5
-        self.saps_margin = 10.0
+        ##### cRT: Decoupled Prototype Retraining
+        # Freeze all parameters except prototype-related ones
+        # This enables Stage 2 balanced fine-tuning of prototypes
+        self.crt_finetune = True  # Set to True for Stage 2
+        if self.crt_finetune:
+            # Freeze backbone feature extraction
+            for name, param in self.named_parameters():
+                if any(k in name for k in ['rel_embed', 'W_pred', 'logit_scale', 'project_head']):
+                    param.requires_grad = True
+                else:
+                    param.requires_grad = False
+            # Compute inverse-sqrt-frequency weights for balanced triplet loss
+            # VG150 predicate frequencies (approximate, computed from training set)
+            pred_freq = torch.FloatTensor([
+                0.0, 68507, 8768, 3839, 2338, 944, 4278, 280, 213, 2978, 
+                996, 817, 266, 244, 152, 724, 218, 1001, 413, 9171, 
+                2097, 23147, 21584, 1415, 717, 194, 307, 224, 116, 6555,
+                2172, 48961, 5765, 3219, 2082, 1010, 269, 188, 258, 365,
+                195, 2413, 2236, 1009, 266, 293, 183, 149, 2000, 7917, 1049
+            ])
+            pred_freq = pred_freq.clamp(min=1.0)
+            inv_sqrt_freq = 1.0 / torch.sqrt(pred_freq)
+            inv_sqrt_freq = inv_sqrt_freq / inv_sqrt_freq.mean()  # normalize
+            self.register_buffer('crt_triplet_weights', inv_sqrt_freq)
         #####
+
 
         ##### refine object labels
         self.pos_embed = nn.Sequential(*[
@@ -238,14 +253,6 @@ class PrototypeEmbeddingNetwork(nn.Module):
             add_losses.update({"dist_loss2": dist_loss})
             ### end 
 
-            ### Semantic-Aware Prototype Separation (SAPS) loss
-            # Adaptively push semantically similar prototypes apart
-            weighted_margin = self.saps_margin * self.glove_sim_matrix  # (51, 51)
-            saps_violation = torch.clamp(weighted_margin - proto_dis_mat, min=0.0)
-            saps_loss = (saps_violation * self.glove_sim_matrix).sum() / (self.glove_sim_matrix.sum() + 1e-8)
-            add_losses.update({"saps_loss": self.saps_lambda * saps_loss})
-            ### end
-
             ###  Prototype-based Learning  ---- Euclidean distance
             rel_labels = cat(rel_labels, dim=0)
             gamma1 = 1.0
@@ -258,7 +265,13 @@ class PrototypeEmbeddingNetwork(nn.Module):
             distance_set_pos = distance_set[torch.arange(rel_labels.size(0)), rel_labels]  # gt i.e., g+
             sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
             topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10  # obtaining g-, where k1 = 10, 
-            loss_sum = torch.max(torch.zeros(rel_labels.size(0)).cuda(), distance_set_pos - topK_sorted_distance_set_neg + gamma1).mean()
+            per_sample_loss = torch.max(torch.zeros(rel_labels.size(0)).cuda(), distance_set_pos - topK_sorted_distance_set_neg + gamma1)
+            # cRT: Apply inverse-frequency weights to triplet loss for balanced prototype learning
+            if hasattr(self, 'crt_triplet_weights'):
+                sample_weights = self.crt_triplet_weights[rel_labels]
+                loss_sum = (per_sample_loss * sample_weights).mean()
+            else:
+                loss_sum = per_sample_loss.mean()
             add_losses.update({"loss_dis": loss_sum})     # Le_euc = max(0, (g+) - (g-) + gamma1)
             ### end 
  

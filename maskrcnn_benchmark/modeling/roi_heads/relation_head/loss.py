@@ -44,6 +44,11 @@ class RelationLossComputation(object):
             self.criterion_loss = Label_Smoothing_Regression(e=0.01)
         else:
             self.criterion_loss = nn.CrossEntropyLoss()
+        
+        ##### Focal Loss for relation classification
+        self.focal_gamma = 2.0  # focusing parameter
+        self.use_focal_loss = True  # enable focal loss for relation prediction
+        #####
 
 
     def __call__(self, proposals, rel_labels, relation_logits, refine_logits):
@@ -75,7 +80,15 @@ class RelationLossComputation(object):
         fg_labels = cat([proposal.get_field("labels") for proposal in proposals], dim=0)
         rel_labels = cat(rel_labels, dim=0)
 
-        loss_relation = self.criterion_loss(relation_logits, rel_labels.long())
+        ##### Focal Loss for relation classification
+        if self.use_focal_loss:
+            ce_loss = F.cross_entropy(relation_logits, rel_labels.long(), reduction='none')
+            pt = torch.exp(-ce_loss)  # pt = softmax probability of correct class
+            focal_weight = (1.0 - pt) ** self.focal_gamma
+            loss_relation = (focal_weight * ce_loss).mean()
+        else:
+            loss_relation = self.criterion_loss(relation_logits, rel_labels.long())
+        #####
         loss_refine_obj = self.criterion_loss(refine_obj_logits, fg_labels.long())
 
         # The following code is used to calcaulate sampled attribute loss
