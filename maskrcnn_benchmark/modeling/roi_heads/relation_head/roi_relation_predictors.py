@@ -104,29 +104,19 @@ class PrototypeEmbeddingNetwork(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-        ##### cRT: Decoupled Prototype Retraining (Progressive Freeze)
-        # Phase 1 (first 70% of training): train everything normally
-        # Phase 2 (last 30%): freeze backbone, only train prototypes with balanced weights
-        self.crt_total_steps = 50000  # total training iterations
-        self.crt_freeze_ratio = 0.7   # freeze backbone after 70% of training
+        ##### Component 2: cRT Decoupled Prototype Retraining
+        self.crt_total_steps = 50000
+        self.crt_freeze_ratio = 0.7
         self.register_buffer('crt_step', torch.zeros(1, dtype=torch.long))
         self.crt_frozen = False
-        # Inverse-sqrt-frequency weights for balanced triplet loss (Phase 2)
-        pred_freq = torch.FloatTensor([
-            0.5, 68507, 8768, 3839, 2338, 944, 4278, 280, 213, 2978, 
-            996, 817, 266, 244, 152, 724, 218, 1001, 413, 9171, 
+        pred_freq = torch.FloatTensor([0.5, 68507, 8768, 3839, 2338, 944, 4278, 280, 213, 2978,
+            996, 817, 266, 244, 152, 724, 218, 1001, 413, 9171,
             2097, 23147, 21584, 1415, 717, 194, 307, 224, 116, 6555,
             2172, 48961, 5765, 3219, 2082, 1010, 269, 188, 258, 365,
-            195, 2413, 2236, 1009, 266, 293, 183, 149, 2000, 7917, 1049
-        ])
-        pred_freq = pred_freq.clamp(min=1.0)
+            195, 2413, 2236, 1009, 266, 293, 183, 149, 2000, 7917, 1049]).clamp(min=1.0)
         inv_sqrt_freq = 1.0 / torch.sqrt(pred_freq)
-        inv_sqrt_freq = inv_sqrt_freq / inv_sqrt_freq.mean()
-        self.register_buffer('crt_triplet_weights', inv_sqrt_freq)
-        #####
-
-
-        ##### refine object labels
+        self.register_buffer('crt_balanced_weights', inv_sqrt_freq / inv_sqrt_freq.mean())
+        #####        ##### refine object labels
         self.pos_embed = nn.Sequential(*[
             nn.Linear(9, 32), nn.BatchNorm1d(32, momentum= 0.001),
             nn.Linear(32, 128), nn.ReLU(inplace=True),
@@ -271,14 +261,15 @@ class PrototypeEmbeddingNetwork(nn.Module):
             sorted_distance_set_neg, _ = torch.sort(distance_set_neg, dim=1)
             topK_sorted_distance_set_neg = sorted_distance_set_neg[:, :11].sum(dim=1) / 10  # obtaining g-, where k1 = 10, 
             per_sample_loss = torch.max(torch.zeros(rel_labels.size(0)).cuda(), distance_set_pos - topK_sorted_distance_set_neg + gamma1)
-            # cRT: Apply inverse-frequency weights to triplet loss for balanced prototype learning
-            if hasattr(self, 'crt_triplet_weights'):
-                sample_weights = self.crt_triplet_weights[rel_labels]
+            # cRT: Apply balanced weights in Phase 2
+            if self.crt_frozen:
+                sample_weights = self.crt_balanced_weights[rel_labels]
                 loss_sum = (per_sample_loss * sample_weights).mean()
             else:
                 loss_sum = per_sample_loss.mean()
             add_losses.update({"loss_dis": loss_sum})     # Le_euc = max(0, (g+) - (g-) + gamma1)
             ### end 
+
  
         return entity_dists, rel_dists, add_losses, add_data
 
