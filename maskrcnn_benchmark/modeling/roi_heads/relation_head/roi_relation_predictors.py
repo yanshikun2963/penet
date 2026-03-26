@@ -104,30 +104,25 @@ class PrototypeEmbeddingNetwork(nn.Module):
 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-        ##### cRT: Decoupled Prototype Retraining
-        # Freeze all parameters except prototype-related ones
-        # This enables Stage 2 balanced fine-tuning of prototypes
-        self.crt_finetune = True  # Set to True for Stage 2
-        if self.crt_finetune:
-            # Freeze backbone feature extraction
-            for name, param in self.named_parameters():
-                if any(k in name for k in ['rel_embed', 'W_pred', 'logit_scale', 'project_head']):
-                    param.requires_grad = True
-                else:
-                    param.requires_grad = False
-            # Compute inverse-sqrt-frequency weights for balanced triplet loss
-            # VG150 predicate frequencies (approximate, computed from training set)
-            pred_freq = torch.FloatTensor([
-                0.0, 68507, 8768, 3839, 2338, 944, 4278, 280, 213, 2978, 
-                996, 817, 266, 244, 152, 724, 218, 1001, 413, 9171, 
-                2097, 23147, 21584, 1415, 717, 194, 307, 224, 116, 6555,
-                2172, 48961, 5765, 3219, 2082, 1010, 269, 188, 258, 365,
-                195, 2413, 2236, 1009, 266, 293, 183, 149, 2000, 7917, 1049
-            ])
-            pred_freq = pred_freq.clamp(min=1.0)
-            inv_sqrt_freq = 1.0 / torch.sqrt(pred_freq)
-            inv_sqrt_freq = inv_sqrt_freq / inv_sqrt_freq.mean()  # normalize
-            self.register_buffer('crt_triplet_weights', inv_sqrt_freq)
+        ##### cRT: Decoupled Prototype Retraining (Progressive Freeze)
+        # Phase 1 (first 70% of training): train everything normally
+        # Phase 2 (last 30%): freeze backbone, only train prototypes with balanced weights
+        self.crt_total_steps = 50000  # total training iterations
+        self.crt_freeze_ratio = 0.7   # freeze backbone after 70% of training
+        self.register_buffer('crt_step', torch.zeros(1, dtype=torch.long))
+        self.crt_frozen = False
+        # Inverse-sqrt-frequency weights for balanced triplet loss (Phase 2)
+        pred_freq = torch.FloatTensor([
+            0.5, 68507, 8768, 3839, 2338, 944, 4278, 280, 213, 2978, 
+            996, 817, 266, 244, 152, 724, 218, 1001, 413, 9171, 
+            2097, 23147, 21584, 1415, 717, 194, 307, 224, 116, 6555,
+            2172, 48961, 5765, 3219, 2082, 1010, 269, 188, 258, 365,
+            195, 2413, 2236, 1009, 266, 293, 183, 149, 2000, 7917, 1049
+        ])
+        pred_freq = pred_freq.clamp(min=1.0)
+        inv_sqrt_freq = 1.0 / torch.sqrt(pred_freq)
+        inv_sqrt_freq = inv_sqrt_freq / inv_sqrt_freq.mean()
+        self.register_buffer('crt_triplet_weights', inv_sqrt_freq)
         #####
 
 
@@ -160,6 +155,16 @@ class PrototypeEmbeddingNetwork(nn.Module):
 
         add_losses = {}
         add_data = {}
+
+        # cRT: Progressive freeze - freeze backbone after 70% of training
+        if self.training:
+            self.crt_step += 1
+            freeze_step = int(self.crt_total_steps * self.crt_freeze_ratio)
+            if self.crt_step.item() >= freeze_step and not self.crt_frozen:
+                self.crt_frozen = True
+                for name, param in self.named_parameters():
+                    if not any(k in name for k in ['rel_embed', 'W_pred', 'logit_scale', 'project_head']):
+                        param.requires_grad = False
 
         # refine object labels
         entity_dists, entity_preds = self.refine_obj_labels(roi_features, proposals)
